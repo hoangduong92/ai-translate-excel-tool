@@ -1,0 +1,17 @@
+# Environment variables
+.env
+.env.*
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.xltx
+*.xltm
+
+# Cache files
+*cache.json
+
+
+# Log files
+*.log
+translation_log_*.log
