@@ -15,7 +15,13 @@ from langdetect import detect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import traceback  # Thêm import này nếu bạn sử dụng traceback
 from dotenv import load_dotenv
+import math
 load_dotenv()
+
+# Tham số global
+BATCH_SIZE = 20  # Số dòng Excel gom lại để dịch trong một lần gọi API
+API_DELAY = 2.0  # Thời gian chờ giữa các lần gọi API (giây)
+GROUP_BY_ROW = True  # Gom các ô theo dòng thay vì riêng lẻ
 
 print(os.getenv("GEMINI_API_KEY"))
 
@@ -28,7 +34,7 @@ client = OpenAI(
 )
 
 class ExcelTranslator:
-    def __init__(self, workers=3, cache_file=None, log_file=None):
+    def __init__(self, workers=3, cache_file=None, log_file=None, api_delay=API_DELAY):
         """
         Khởi tạo translator với OpenAI API
         """
@@ -45,18 +51,18 @@ class ExcelTranslator:
 
         # Khởi tạo các thuộc tính khác
         client.api_key = api_key
-        self.cached_translations = {}
+        # self.cached_translations = {}
         self.workers = workers
         self.should_exit = False
-        self.cache_file = cache_file
+        # self.cache_file = cache_file
         self.max_retries = 3
-        self.base_delay = 1.0
+        self.base_delay = api_delay  # Sử dụng tham số api_delay
 
         # Khóa để đảm bảo thread-safety
-        self.cache_lock = threading.Lock()
+        # self.cache_lock = threading.Lock()
 
         # Load cache và thiết lập signal handler
-        self.load_cache()
+        # self.load_cache()
         signal.signal(signal.SIGINT, self.handle_sigint)
 
     def setup_logging(self, log_file=None):
@@ -77,27 +83,29 @@ class ExcelTranslator:
 
     def load_cache(self):
         """Nạp cache từ file JSON"""
-        if self.cache_file and os.path.exists(self.cache_file):
-            try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    self.cached_translations = json.load(f)
-                self.logger.info(
-                    f"Đã nạp {len(self.cached_translations)} bản dịch từ cache")
-            except Exception as e:
-                self.logger.error(f"Lỗi khi nạp cache: {str(e)}")
+        # if self.cache_file and os.path.exists(self.cache_file):
+        #     try:
+        #         with open(self.cache_file, 'r', encoding='utf-8') as f:
+        #             self.cached_translations = json.load(f)
+        #         self.logger.info(
+        #             f"Đã nạp {len(self.cached_translations)} bản dịch từ cache")
+        #     except Exception as e:
+        #         self.logger.error(f"Lỗi khi nạp cache: {str(e)}")
+        pass
 
     def save_cache(self):
         """Lưu cache vào file JSON"""
-        if self.cache_file:
-            with self.cache_lock:
-                try:
-                    with open(self.cache_file, 'w', encoding='utf-8') as f:
-                        json.dump(self.cached_translations, f,
-                                  ensure_ascii=False, indent=2)
-                    self.logger.info(
-                        f"Đã lưu {len(self.cached_translations)} bản dịch vào cache")
-                except Exception as e:
-                    self.logger.error(f"Lỗi khi lưu cache: {str(e)}")
+        # if self.cache_file:
+        #     with self.cache_lock:
+        #         try:
+        #             with open(self.cache_file, 'w', encoding='utf-8') as f:
+        #                 json.dump(self.cached_translations, f,
+        #                           ensure_ascii=False, indent=2)
+        #             self.logger.info(
+        #                 f"Đã lưu {len(self.cached_translations)} bản dịch vào cache")
+        #         except Exception as e:
+        #             self.logger.error(f"Lỗi khi lưu cache: {str(e)}")
+        pass
 
     def handle_sigint(self, signum, frame):
         """Xử lý tín hiệu Ctrl+C"""
@@ -150,30 +158,51 @@ class ExcelTranslator:
 
         return True, "Cần dịch"
 
-    def translate_to_japanese(self, text, cell_info=""):
+    def translate_batch_to_japanese(self, texts, cell_infos=None):
         """
-        Dịch văn bản sang tiếng Nhật sử dụng OpenAI API
+        Dịch một batch văn bản sang tiếng Nhật sử dụng OpenAI API
+        
+        Args:
+            texts: Danh sách các văn bản cần dịch
+            cell_infos: Danh sách thông tin về các ô tương ứng
+            
+        Returns:
+            Danh sách các văn bản đã dịch
         """
-        try:
-            with self.cache_lock:
-                if text in self.cached_translations:
-                    self.logger.debug(
-                        f"{cell_info} - Sử dụng bản dịch từ cache")
-                    return self.cached_translations[text]
-
-            text = self.clean_text(text)
-            if not text:
-                return text
-
-            for attempt in range(self.max_retries):
-                try:
-                    start_time = time.time()
-
-                    response = client.chat.completions.create(
-                        model="gemini-2.0-flash-lite",
-                        messages=[
-                            {"role": "system", "content": """You are a professional translator. Follow these rules strictly:
-1. Output ONLY the Japanese translation, nothing else
+        if not texts:
+            return []
+            
+        if cell_infos is None:
+            cell_infos = ["" for _ in texts]
+            
+        # Làm sạch văn bản
+        cleaned_texts = [self.clean_text(text) for text in texts]
+        # Loại bỏ các văn bản trống
+        valid_indices = [i for i, text in enumerate(cleaned_texts) if text]
+        if not valid_indices:
+            return texts  # Trả về danh sách ban đầu nếu không có văn bản hợp lệ
+            
+        valid_texts = [cleaned_texts[i] for i in valid_indices]
+        valid_cell_infos = [cell_infos[i] for i in valid_indices]
+        
+        # Chuẩn bị kết quả với giá trị ban đầu
+        results = list(texts)  # Tạo bản sao của danh sách ban đầu
+        
+        # Ghép các văn bản thành một chuỗi duy nhất với dấu phân cách
+        batch_text = "\n---ITEM_SEPARATOR---\n".join(valid_texts)
+        
+        for attempt in range(self.max_retries):
+            try:
+                start_time = time.time()
+                
+                # Tạo prompt yêu cầu dịch batch văn bản
+                prompt = f"Translate each of the following text items to Japanese. Each item is separated by '---ITEM_SEPARATOR---'.\n\n{batch_text}"
+                
+                response = client.chat.completions.create(
+                    model="gemini-2.0-flash-lite",
+                    messages=[
+                        {"role": "system", "content": """You are a professional translator. Follow these rules strictly:
+1. Output ONLY the Japanese translations, nothing else
 2. DO NOT include the original text in your response
 3. DO NOT add any explanations or notes
 4. Keep IDs and special characters unchanged
@@ -182,88 +211,111 @@ class ExcelTranslator:
 7. Preserve the original formatting (spaces, line breaks)
 8. For mixed language text, translate all non-Japanese parts to Japanese
 9. Use proper Japanese particle usage (の, を, に, etc.)
+10. IMPORTANT: Maintain the same number of items and keep them separated by '---ITEM_SEPARATOR---'
 
 Examples:
 
-# Simple text
-Input: "Save File"
-Output: "ファイルを保存"
+# Input (multiple items):
+Save File
+---ITEM_SEPARATOR---
+CSV出力の設定
+---ITEM_SEPARATOR---
+1. Các item thuộc 検索 - Logo hiển thị đúng như design
 
-# Pure Japanese (keep unchanged)
-Input: "CSV出力の設定"
-Output: "CSV出力の設定"
+# Output (multiple items):
+ファイルを保存
+---ITEM_SEPARATOR---
+CSV出力の設定
+---ITEM_SEPARATOR---
+１．検索に属する項目 - ロゴはデザイン通りに表示されます"""},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
 
-# Mixed Vietnamese-Japanese with technical terms
-Input: "1. Các item thuộc 検索 - Logo hiển thị đúng như design"
-Output: "１．検索に属する項目 - ロゴはデザイン通りに表示されます"
-
-# Mixed Vietnamese-Japanese with system terms
-Input: "2. Kiểm tra 設定画面 và các chức năng liên quan"
-Output: "２．設定画面と関連機能を確認します"
-
-# Mixed English-Vietnamese-Japanese with line breaks
-Input: "Check hiển thị default
-1. Trên menu click バースデーカード"
-Output: "デフォルト表示確認
-１．メニューのバースデーカードをクリック"
-
-# Test case format
-Input: "TC01 - Kiểm tra màn hình 設定 - Check default value"
-Output: "TC01 - 設定画面の確認 - デフォルト値を確認"
-
-# Button and action terms
-Input: "3. Click button 選択 để chọn file"
-Output: "３．ファイルを選択するために選択ボタンをクリックします"
-"""},
-                            {"role": "user", "content": f"Translate the following text to Japanese:\n\n{text}"}
-                        ]
-                    )
-
-                    translation_time = time.time() - start_time
-                    translated_text = response.choices[0].message.content
-
-                    if translated_text:
+                translation_time = time.time() - start_time
+                translated_text = response.choices[0].message.content
+                
+                if translated_text:
+                    # Tách các bản dịch từ kết quả
+                    translated_items = translated_text.split("---ITEM_SEPARATOR---")
+                    
+                    # Kiểm tra số lượng bản dịch có khớp với số lượng văn bản hợp lệ không
+                    if len(translated_items) >= len(valid_texts):
+                        # Ghi log thông tin về batch
                         self.logger.info(
-                            f"{cell_info}\n"
-                            f"Văn bản gốc ({len(text)} ký tự): {text}\n"
-                            f"Bản dịch ({len(translated_text)} ký tự): {translated_text}\n"
-                            f"Thời gian dịch: {translation_time:.2f}s"
+                            f"Đã dịch batch với {len(valid_texts)} mục trong {translation_time:.2f}s"
                         )
-
-                        # with self.cache_lock:
-                            # self.cached_translations[text] = translated_text
-                        time.sleep(self.base_delay)
-                        return translated_text
-
-                    self.logger.warning(
-                        f"{cell_info} - Lần thử {attempt + 1}: Không nhận được kết quả dịch"
-                    )
+                        
+                        # Ghi log chi tiết cho từng mục
+                        for i, (orig, trans, info) in enumerate(zip(valid_texts, translated_items, valid_cell_infos)):
+                            self.logger.info(
+                                f"{info}\n"
+                                f"Văn bản gốc ({len(orig)} ký tự): {orig}\n"
+                                f"Bản dịch ({len(trans.strip())} ký tự): {trans.strip()}"
+                            )
+                        
+                        # Cập nhật kết quả
+                        for i, idx in enumerate(valid_indices):
+                            if i < len(translated_items):
+                                results[idx] = translated_items[i].strip()
+                        
+                        time.sleep(self.base_delay)  # Chờ giữa các lần gọi API
+                        return results
+                    else:
+                        self.logger.warning(
+                            f"Số lượng bản dịch không khớp: nhận {len(translated_items)}, mong đợi {len(valid_texts)}"
+                        )
+                
+                self.logger.warning(f"Lần thử {attempt + 1}: Không nhận được kết quả dịch hợp lệ")
+                time.sleep(self.base_delay * (attempt + 1))
+                
+            except Exception as e:
+                self.logger.warning(f"Lần thử {attempt + 1} thất bại: {str(e)}")
+                if attempt < self.max_retries - 1:
                     time.sleep(self.base_delay * (attempt + 1))
-
-                except Exception as e:
-                    self.logger.warning(
-                        f"{cell_info} - Lần thử {attempt + 1} thất bại: {str(e)}"
-                    )
-                    if attempt < self.max_retries - 1:
-                        time.sleep(self.base_delay * (attempt + 1))
-                        continue
-                    raise
-
-            self.logger.error(
-                f"{cell_info} - Không thể dịch sau {self.max_retries} lần thử")
-            return text
-
+                    continue
+                raise
+        
+        self.logger.error(f"Không thể dịch batch sau {self.max_retries} lần thử")
+        return results  # Trả về danh sách ban đầu nếu không dịch được
+    
+    def translate_to_japanese(self, text, cell_info=""):
+        """
+        Dịch một văn bản sang tiếng Nhật (wrapper cho hàm batch)
+        """
+        try:
+            text = self.clean_text(text)
+            if not text:
+                return text
+                
+            # Gọi hàm dịch batch với một mục duy nhất
+            results = self.translate_batch_to_japanese([text], [cell_info])
+            return results[0] if results else text
+            
         except Exception as e:
             self.logger.error(f"{cell_info} - Lỗi dịch: {str(e)}")
             return text
 
-    def process_excel_file(self, input_path):
+    def process_excel_file(self, input_path, output_dir=None):
         """
         Xử lý một file Excel: đọc nội dung, xác định các ô cần dịch, thực hiện dịch và lưu kết quả.
+        
+        Args:
+            input_path: Đường dẫn đến file Excel cần dịch
+            output_dir: Thư mục đầu ra. Nếu None, lưu file với hậu tố '_translated' cùng thư mục với file gốc
         """
         try:
-            filename, ext = os.path.splitext(input_path)
-            output_path = f"{filename}_translated{ext}"
+            base_filename = os.path.basename(input_path)
+            filename, ext = os.path.splitext(base_filename)
+            
+            if output_dir:
+                # Đảm bảo thư mục đầu ra tồn tại
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, f"{filename}_translated{ext}")
+            else:
+                # Nếu không có output_dir, lưu cùng thư mục với file gốc
+                filename_full, ext = os.path.splitext(input_path)
+                output_path = f"{filename_full}_translated{ext}"
 
             self.logger.info(
                 f"Bắt đầu xử lý file: {os.path.basename(input_path)}")
@@ -274,7 +326,7 @@ Output: "３．ファイルを選択するために選択ボタンをクリッ�
                 'total_cells': 0,
                 'processed_cells': 0,
                 'translated_cells': 0,
-                'cached_translations': 0,
+                # 'cached_translations': 0,
                 'failed_translations': 0
             }
 
@@ -316,37 +368,94 @@ Output: "３．ファイルを選択するために選択ボタンをクリッ�
                     f"- Ô cần dịch: {translation_stats['processed_cells']}"
                 )
 
-                # Dịch các ô
+                # Dịch các ô theo batch
                 with tqdm(total=len(cells_to_translate), desc=f"Dịch sheet {sheet_name}", unit='cell') as pbar:
-                    with ThreadPoolExecutor(max_workers=self.workers) as executor:
-                        future_to_cell = {
-                            executor.submit(
-                                self.translate_to_japanese,
-                                cell.value,
-                                cell_info
-                            ): (cell, cell_info)
-                            for cell, cell_info in cells_to_translate
-                        }
-
-                        for future in as_completed(future_to_cell):
-                            if self.should_exit:
-                                raise KeyboardInterrupt
-
-                            cell, cell_info = future_to_cell[future]
-                            try:
-                                translated_text = future.result()
+                    batches = []
+                    
+                    if GROUP_BY_ROW:
+                        # Gom các ô theo dòng
+                        cells_by_row = {}
+                        for cell, cell_info in cells_to_translate:
+                            # Lấy số dòng từ ô
+                            row_num = cell.row
+                            if row_num not in cells_by_row:
+                                cells_by_row[row_num] = []
+                            cells_by_row[row_num].append((cell, cell_info))
+                        
+                        # Chuyển từ dict sang list các dòng
+                        rows = [cells_by_row[row_num] for row_num in sorted(cells_by_row.keys())]
+                        
+                        # Chia các dòng thành các batch có kích thước BATCH_SIZE
+                        row_batches = [rows[i:i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
+                        
+                        # Chuyển từ batch các dòng sang batch các ô
+                        for row_batch in row_batches:
+                            # Gom tất cả các ô từ các dòng trong batch này
+                            cells_batch = []
+                            for row in row_batch:
+                                cells_batch.extend(row)
+                            batches.append(cells_batch)
+                            
+                        self.logger.info(f"Chia thành {len(batches)} batch theo dòng, mỗi batch tối đa {BATCH_SIZE} dòng")
+                    else:
+                        # Chia các ô thành các batch có kích thước BATCH_SIZE (cách cũ)
+                        batches = [cells_to_translate[i:i + BATCH_SIZE] for i in range(0, len(cells_to_translate), BATCH_SIZE)]
+                        self.logger.info(f"Chia thành {len(batches)} batch, mỗi batch tối đa {BATCH_SIZE} ô")
+                    
+                    for batch_idx, batch in enumerate(batches):
+                        if self.should_exit:
+                            raise KeyboardInterrupt
+                            
+                        if GROUP_BY_ROW:
+                            self.logger.info(f"Xử lý batch {batch_idx + 1}/{len(batches)} với {len(batch)} ô từ nhiều dòng")
+                        else:
+                            self.logger.info(f"Xử lý batch {batch_idx + 1}/{len(batches)} với {len(batch)} ô")
+                        
+                        # Chuẩn bị dữ liệu cho batch
+                        batch_texts = [cell.value for cell, _ in batch]
+                        batch_cell_infos = [cell_info for _, cell_info in batch]
+                        
+                        try:
+                            # Dịch cả batch
+                            translated_texts = self.translate_batch_to_japanese(batch_texts, batch_cell_infos)
+                            
+                            # Cập nhật giá trị cho các ô
+                            for i, ((cell, _), translated_text) in enumerate(zip(batch, translated_texts)):
                                 if translated_text != cell.value:
                                     cell.value = translated_text
                                     translation_stats['translated_cells'] += 1
-                                    with self.cache_lock:
-                                        if cell.value in self.cached_translations:
-                                            translation_stats['cached_translations'] += 1
                                 pbar.update(1)
-                            except Exception as e:
-                                self.logger.error(
-                                    f"Lỗi khi dịch {cell_info}: {str(e)}"
-                                )
-                                translation_stats['failed_translations'] += 1
+                                
+                        except Exception as e:
+                            self.logger.error(f"Lỗi khi xử lý batch {batch_idx + 1}: {str(e)}")
+                            # Nếu xử lý batch thất bại, thử xử lý từng ô một
+                            self.logger.info("Thử xử lý từng ô riêng lẻ...")
+                            
+                            with ThreadPoolExecutor(max_workers=self.workers) as executor:
+                                future_to_cell = {
+                                    executor.submit(
+                                        self.translate_to_japanese,
+                                        cell.value,
+                                        cell_info
+                                    ): (cell, cell_info)
+                                    for cell, cell_info in batch
+                                }
+                                
+                                for future in as_completed(future_to_cell):
+                                    if self.should_exit:
+                                        raise KeyboardInterrupt
+                                        
+                                    cell, cell_info = future_to_cell[future]
+                                    try:
+                                        translated_text = future.result()
+                                        if translated_text != cell.value:
+                                            cell.value = translated_text
+                                            translation_stats['translated_cells'] += 1
+                                    except Exception as e:
+                                        self.logger.error(f"{cell_info} - Lỗi dịch: {str(e)}")
+                                        translation_stats['failed_translations'] += 1
+                                    finally:
+                                        pbar.update(1)
 
                 sheet_time = time.time() - sheet_start_time
                 self.logger.info(
@@ -355,25 +464,18 @@ Output: "３．ファイルを選択するために選択ボタンをクリッ�
                 )
 
             wb.save(output_path)
-            self.save_cache()
-
-            total_time = time.time() - file_start_time
             self.logger.info(
-                f"Hoàn thành file {os.path.basename(input_path)}:\n"
+                f"Đã lưu file dịch vào: {output_path}\n"
                 f"- Tổng số ô: {translation_stats['total_cells']}\n"
-                f"- Ô đã xử lý: {translation_stats['processed_cells']}\n"
+                f"- Ô cần dịch: {translation_stats['processed_cells']}\n"
                 f"- Ô đã dịch: {translation_stats['translated_cells']}\n"
-                f"- Dịch từ cache: {translation_stats['cached_translations']}\n"
-                f"- Dịch thất bại: {translation_stats['failed_translations']}\n"
-                f"- Tổng thời gian: {total_time:.2f}s\n"
-                f"- Tốc độ trung bình: {translation_stats['translated_cells']/total_time:.2f} ô/giây"
+                f"- Ô dịch thất bại: {translation_stats['failed_translations']}"
             )
 
         except KeyboardInterrupt:
             self.logger.info("Đang dừng xử lý file...")
             try:
                 wb.save(output_path)
-                self.save_cache()
                 self.logger.info(f"Đã lưu các thay đổi vào: {output_path}")
             except:
                 self.logger.error("Không thể lưu file.")
@@ -384,11 +486,27 @@ Output: "３．ファイルを選択するために選択ボタンをクリッ�
 
 
 def main():
+    # Khai báo các biến global sẽ được sử dụng trong hàm này
+    global BATCH_SIZE, API_DELAY, GROUP_BY_ROW
+    
+    # Xác định đường dẫn đến thư mục chứa script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Đường dẫn mặc định cho thư mục input và output
+    default_input_dir = os.path.join(script_dir, 'input')
+    default_output_dir = os.path.join(script_dir, 'output')
+    
     parser = argparse.ArgumentParser(
         description='Dịch nội dung file Excel sang tiếng Nhật')
+    parser.add_argument('-i', '--input',
+                        help='Đường dẫn đến thư mục chứa file Excel cần dịch (mặc định: thư mục "input" cùng cấp với script)',
+                        default=default_input_dir)
+    parser.add_argument('-o', '--output',
+                        help='Đường dẫn đến thư mục lưu file Excel đã dịch (mặc định: thư mục "output" cùng cấp với script)',
+                        default=default_output_dir)
     parser.add_argument('-d', '--directory',
-                        help='Đường dẫn đến thư mục chứa file Excel cần dịch',
-                        default=os.getcwd())
+                        help='Đường dẫn đến thư mục chứa file Excel cần dịch (tương thích ngược)',
+                        default=None)
     parser.add_argument('-f', '--file',
                         help='Đường dẫn đến file Excel cần dịch',
                         default=None)
@@ -396,9 +514,21 @@ def main():
                         help='Số lượng worker threads (mặc định: 3)',
                         type=int,
                         default=3)
-    parser.add_argument('-c', '--cache',
-                        help='File cache để lưu các bản dịch',
-                        default='translation_cache.json')
+    parser.add_argument('-b', '--batch-size',
+                        help='Số lượng dòng Excel gom lại để dịch trong một lần gọi API (mặc định: 20)',
+                        type=int,
+                        default=BATCH_SIZE)
+    parser.add_argument('--group-by-row',
+                        help='Gom các ô theo dòng thay vì riêng lẻ (mặc định: True)',
+                        action='store_true',
+                        default=GROUP_BY_ROW)
+    parser.add_argument('-a', '--api-delay',
+                        help='Thời gian chờ giữa các lần gọi API (giây) (mặc định: 1.0)',
+                        type=float,
+                        default=API_DELAY)
+    # parser.add_argument('-c', '--cache',
+    #                     help='File cache để lưu các bản dịch',
+    #                     default='translation_cache.json')
     parser.add_argument('-l', '--log',
                         help='File log output',
                         default=None)
@@ -406,13 +536,34 @@ def main():
     args = parser.parse_args()
 
     try:
+        # Cập nhật tham số global nếu được chỉ định qua command line
+        if args.batch_size != BATCH_SIZE:
+            BATCH_SIZE = args.batch_size
+            print(f"Đã đặt kích thước batch: {BATCH_SIZE}")
+            
+        if args.api_delay != API_DELAY:
+            API_DELAY = args.api_delay
+            print(f"Đã đặt thời gian chờ API: {API_DELAY}s")
+            
+        if args.group_by_row != GROUP_BY_ROW:
+            GROUP_BY_ROW = args.group_by_row
+            print(f"Chế độ gom theo dòng: {'Bật' if GROUP_BY_ROW else 'Tắt'}")
+            
         print(f"Khởi tạo translator...")
         translator = ExcelTranslator(
             workers=args.workers,
-            cache_file=args.cache,
-            log_file=args.log
+            # cache_file=args.cache,
+            log_file=args.log,
+            api_delay=API_DELAY
         )
 
+        # Xác định thư mục đầu vào (ưu tiên --directory nếu được cung cấp, để tương thích ngược)
+        input_dir = args.directory if args.directory else args.input
+        output_dir = args.output
+        
+        print(f"Thư mục đầu vào: {input_dir}")
+        print(f"Thư mục đầu ra: {output_dir}")
+        
         # Process a single file if specified
         if args.file:
             if not os.path.isfile(args.file):
@@ -424,27 +575,35 @@ def main():
                 return
                 
             print(f"\nĐang xử lý file: {os.path.basename(args.file)}")
-            translator.process_excel_file(args.file)
+            translator.process_excel_file(args.file, output_dir)
             return
 
-        print(f"Kiểm tra thư mục: {args.directory}")
-        if not os.path.exists(args.directory):
-            print(f"Lỗi: Thư mục '{args.directory}' không tồn tại!")
+        print(f"Kiểm tra thư mục đầu vào: {input_dir}")
+        if not os.path.exists(input_dir):
+            print(f"Lỗi: Thư mục '{input_dir}' không tồn tại!")
             return
             
-        if not os.path.isdir(args.directory):
-            print(f"Lỗi: '{args.directory}' không phải là thư mục!")
+        if not os.path.isdir(input_dir):
+            print(f"Lỗi: '{input_dir}' không phải là thư mục!")
             return
+            
+        # Kiểm tra thư mục đầu ra nếu được cung cấp
+        if output_dir:
+            if os.path.exists(output_dir) and not os.path.isdir(output_dir):
+                print(f"Lỗi: '{output_dir}' không phải là thư mục!")
+                return
+            # Tạo thư mục đầu ra nếu chưa tồn tại
+            os.makedirs(output_dir, exist_ok=True)
 
         print("Tìm các file Excel...")
         excel_files = [
-            f for f in os.listdir(args.directory)
+            f for f in os.listdir(input_dir)
             if f.endswith('.xlsx') and not f.endswith('_translated.xlsx')
         ]
 
         if not excel_files:
             print(
-                f"Không tìm thấy file Excel nào trong thư mục '{args.directory}'")
+                f"Không tìm thấy file Excel nào trong thư mục '{input_dir}'")
             return
 
         print(f"Tìm thấy {len(excel_files)} file Excel:")
@@ -453,10 +612,10 @@ def main():
 
         print("\nBắt đầu xử lý các file:")
         for filename in excel_files:
-            file_path = os.path.join(args.directory, filename)
+            file_path = os.path.join(input_dir, filename)
             try:
                 print(f"\nĐang xử lý file: {filename}")
-                translator.process_excel_file(file_path)
+                translator.process_excel_file(file_path, output_dir)
             except KeyboardInterrupt:
                 print("\nĐã dừng chương trình theo yêu cầu.")
                 break
