@@ -3,6 +3,19 @@ from openai import OpenAI
 from openpyxl import load_workbook
 import time
 from tqdm import tqdm
+
+# Global constants
+API_DELAY = 2  # Default delay in seconds
+# System prompt filename - change this to switch between different translation directions
+# Options: "system_prompt_vi_to_ja.txt", "system_prompt_ja_to_vi.txt", etc.
+SYSTEM_PROMPT_FILE = "system_prompt_ja_to_vi.txt"
+
+# Target language mapping based on system prompt filename
+LANGUAGE_MAPPING = {
+    "system_prompt_vi_to_ja.txt": "Japanese",
+    "system_prompt_ja_to_vi.txt": "Vietnamese",
+    # Add more language pairs as needed
+}
 import argparse
 import threading
 import logging
@@ -195,13 +208,22 @@ class ExcelTranslator:
             try:
                 start_time = time.time()
                 
-                # Tạo prompt yêu cầu dịch batch văn bản
-                prompt = f"Translate each of the following text items to Japanese. Each item is separated by '---ITEM_SEPARATOR---'.\n\n{batch_text}"
+                # Xác định ngôn ngữ đích dựa trên file system prompt
+                target_language = LANGUAGE_MAPPING.get(os.path.basename(SYSTEM_PROMPT_FILE), "Japanese")  # Fallback to Japanese if not found
                 
-                response = client.chat.completions.create(
-                    model="gemini-2.0-flash-lite",
-                    messages=[
-                        {"role": "system", "content": """You are a professional translator. Follow these rules strictly:
+                # Tạo prompt yêu cầu dịch batch văn bản
+                prompt = f"Translate each of the following text items to {target_language}. Each item is separated by '---ITEM_SEPARATOR---'.\n\n{batch_text}"
+                
+                # Read system prompt from file
+                system_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), SYSTEM_PROMPT_FILE)
+                try:
+                    with open(system_prompt_path, 'r', encoding='utf-8') as f:
+                        system_prompt = f.read()
+                    self.logger.info(f"Successfully loaded system prompt from {system_prompt_path}")
+                except Exception as e:
+                    self.logger.error(f"Error loading system prompt from file: {e}")
+                    # Fallback to default prompt in case of error
+                    system_prompt = """You are a professional translator. Follow these rules strictly:
 1. Output ONLY the Japanese translations, nothing else
 2. DO NOT include the original text in your response
 3. DO NOT add any explanations or notes
@@ -211,23 +233,12 @@ class ExcelTranslator:
 7. Preserve the original formatting (spaces, line breaks)
 8. For mixed language text, translate all non-Japanese parts to Japanese
 9. Use proper Japanese particle usage (の, を, に, etc.)
-10. IMPORTANT: Maintain the same number of items and keep them separated by '---ITEM_SEPARATOR---'
-
-Examples:
-
-# Input (multiple items):
-Save File
----ITEM_SEPARATOR---
-CSV出力の設定
----ITEM_SEPARATOR---
-1. Các item thuộc 検索 - Logo hiển thị đúng như design
-
-# Output (multiple items):
-ファイルを保存
----ITEM_SEPARATOR---
-CSV出力の設定
----ITEM_SEPARATOR---
-１．検索に属する項目 - ロゴはデザイン通りに表示されます"""},
+10. IMPORTANT: Maintain the same number of items and keep them separated by '---ITEM_SEPARATOR---'"""
+                
+                response = client.chat.completions.create(
+                    model="gemini-2.0-flash-lite",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ]
                 )

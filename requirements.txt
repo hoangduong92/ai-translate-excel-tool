@@ -1,0 +1,6 @@
+openai
+openpyxl
+tqdm
+python-dotenv
+langdetect
+# google-generativeai # This might be needed depending on the exact base_url used with OpenAI client for Gemini
