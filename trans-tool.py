@@ -152,7 +152,12 @@ class ExcelTranslator:
         if not value:
             return False, "Ô chỉ chứa khoảng trắng hoặc ký tự đặc biệt"
 
+        # Kiểm tra nếu là ký tự đơn lẻ
         if len(value) <= 1:
+            # Kiểm tra xem có phải là ký tự kanji hoặc hiragana/katakana hay không
+            # hoặc bất kỳ ký tự quan trọng khác
+            if any(ord(c) > 0x4E00 for c in value):  # Kiểm tra phạm vi của các ký tự kanji
+                return True, "Ký tự kanji cần dịch"
             return False, "Văn bản quá ngắn"
 
         if re.match(r'^[\d\s,.-]+$', value):
