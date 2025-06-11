@@ -61,4 +61,4 @@ File đã dịch sẽ được lưu trong thư mục `output`
 
 ## 8. Chú ý về API_DELAY
 
-* Điều chỉnh theo limit quota của API. Hiện tại trong source để là 2 giây vì phù hợp với free tier 30RPM của tác giả.
+* Điều chỉnh theo limit quota của API. Hiện tại trong source để là 2 giây vì phù hợp với free tier 30RPM của gemini-2.0-flash-lite.
