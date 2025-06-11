@@ -1,74 +1,64 @@
 # AI Excel Translation Tool
 
-This Python script translates text within specified cells of an Excel spreadsheet using the Google Gemini API. It supports translation between Japanese and Vietnamese and offers various options for batching, concurrency, and selective translation.
+## 0. Cài đặt thư viện
 
-## Prerequisites
+- Cài đặt các thư viện cần thiết bằng lệnh:
 
-1.  **Python 3.7+**
-2.  **Google Gemini API Key**: You must have a `GEMINI_API_KEY` environment variable set.
-    ```bash
-    export GEMINI_API_KEY="YOUR_API_KEY_HERE"
-    ```
-    Alternatively, you can create a `.env` file in the project root directory with the following content:
-    ```
-    GEMINI_API_KEY=YOUR_API_KEY_HERE
-    ```
-3.  **Required Python Packages**: Install them using pip:
-    ```bash
-    pip install -r requirements.txt
-    ```
+  ```
+  pip install -r requirements.txt
+  ```
 
-## Usage
+## 1. Cấu hình Google API Key
 
-The script is run from the command line. Here's the basic syntax:
+- Đăng ký và lấy Google API Key từ [Get API key | Google AI Studio](https://aistudio.google.com/apikey)
 
-```bash
-python trans-tool.py --file_path <INPUT_EXCEL_FILE> --sheet_name <SHEET_TO_TRANSLATE> [OPTIONS]
-```
+## 2. Cấu hình file .env
 
-### Key Command-Line Arguments
+- Tạo file `.env` từ file `.env.sample` bằng cách xóa đuôi `.sample`
+- Dán API key vào file `.env`:
+  ```
+  GEMINI_API_KEY=YOUR_API_KEY_HERE
+  ```
 
-*   `--file_path` (Required): Path to the input Excel file (e.g., `data/my_data.xlsx`).
-*   `--sheet_name` (Required): Name of the sheet within the Excel file to translate (e.g., `Sheet1`).
-*   `--direction` (Optional): Translation direction. 
-    *   `to_japanese` (Default): Translates from the detected language (typically Vietnamese or English) to Japanese.
-    *   `to_vietnamese`: Translates from the detected language (typically Japanese or English) to Vietnamese.
-    *   Example: `--direction to_vietnamese`
-*   `--output_path` (Optional): Path to save the translated Excel file. If not provided, it defaults to `[input_filename]_translated.xlsx` in the same directory as the input file (e.g., `data/my_data_translated.xlsx`).
-*   `--columns` (Optional): Specify which columns to translate. Provide a space-separated list of column letters (e.g., `A C E`). If not provided, the script attempts to translate all cells with translatable text.
-*   `--start_row` (Optional): The row number to start translation from (1-indexed). Defaults to 1.
-*   `--end_row` (Optional): The row number to end translation at (inclusive). If not provided, translates to the last row with data.
+## 3. File System Prompt cho các hướng dịch
 
-### Performance and Batching Arguments
+- Dịch Việt → Nhật: sử dụng file `system_prompt_vi_to_ja.txt`
+- Dịch Nhật → Việt: sử dụng file `system_prompt_ja_to_vi.txt`
 
-*   `-b, --batch_size` (Optional): Number of items (cells or rows) to group together for a single API translation request. Default: `20`.
-*   `-a, --api_delay` (Optional): Delay in seconds between consecutive API calls to avoid rate limiting. Default: `2.0`.
-*   `--workers` (Optional): Number of concurrent worker threads for making API calls. Default: `3`.
-*   `--group_by_row` (Optional): When this flag is present, the script groups all specified cells within a single row into one item for translation. This can provide better context for the API. If not set, each cell is treated as an individual item. `BATCH_SIZE` will then refer to the number of rows processed in a batch.
+## 4. Cấu hình hướng dịch
 
-### Other Arguments
+- Mở file `trans-tool.py`
+- Sửa biến global `SYSTEM_PROMPT_FILE` thành tên file system prompt tương ứng:
+  ```python
+  # Để dịch từ tiếng Việt sang tiếng Nhật
+  SYSTEM_PROMPT_FILE = "system_prompt_vi_to_ja.txt"
 
-*   `--log_file` (Optional): Path to the log file. Defaults to `translation_log_[timestamp].log`.
-*   `--cache_file` (Optional): Path to the cache file for storing translations (currently, caching logic seems to be commented out or partially implemented in the script).
-*   `-h, --help`: Show the help message and exit.
+  # Hoặc để dịch từ tiếng Nhật sang tiếng Việt
+  SYSTEM_PROMPT_FILE = "system_prompt_ja_to_vi.txt"
+  ```
 
-## Examples
+## 5. Chuẩn bị file cần dịch
 
-1.  **Translate Sheet1 of `input.xlsx` from Vietnamese to Japanese (default direction):**
-    ```bash
-    python trans-tool.py --file_path data/input.xlsx --sheet_name Sheet1
-    ```
+- Đặt file Excel cần dịch vào thư mục `input`
 
-2.  **Translate columns A and D of `Sheet1` in `source_data.xlsx` from Japanese to Vietnamese, saving to `translated_output.xlsx`:**
-    ```bash
-    python trans-tool.py --file_path source_data.xlsx --sheet_name Sheet1 --columns A D --direction to_vietnamese --output_path results/translated_output.xlsx
-    ```
+## 6. Dịch file
 
-3.  **Translate rows 10 to 50 in `Sheet2` of `complex_data.xlsx` to Japanese, grouping by row for context, using 5 workers and a batch size of 10 rows:**
-    ```bash
-    python trans-tool.py --file_path complex_data.xlsx --sheet_name Sheet2 --start_row 10 --end_row 50 --group_by_row --workers 5 --batch_size 10
-    ```
+- Chạy lệnh sau trong terminal:
 
-## Logging
+  ```
+  python trans-tool.py
+  ```
 
-The script generates a log file (e.g., `translation_log_YYYYMMDD_HHMMSS.log`) in the script's directory for each run. This log contains detailed information about the translation process, including API calls, successes, and any errors encountered.
+  hoặc
+
+  ```
+  python trans-tool.py --file_path input/your-file.xlsx --sheet_name Sheet1
+  ```
+
+## 7. File đã dịch
+
+File đã dịch sẽ được lưu trong thư mục `output`
+
+## 8. Chú ý về API_DELAY
+
+* Điều chỉnh theo limit quota của API. Hiện tại trong source để là 2 giây vì phù hợp với free tier 30RPM của tác giả.
